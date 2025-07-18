@@ -1,3 +1,4 @@
+
 #include "rclcpp/executors/single_threaded_executor.hpp"
 #include "rclcpp/node.hpp"
 #include "rclcpp/utilities.hpp"
@@ -28,6 +29,7 @@ public:
   double direction_{0.0};
 
 private:
+  bool turning_locked_ = false;
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr
       laser_scan_subscription_;
   rclcpp::TimerBase::SharedPtr timer_;
@@ -40,9 +42,10 @@ private:
 
   void timer_callback() {
 
-    if (!latest_scan_)
+    if (!latest_scan_) {
+      RCLCPP_INFO(this->get_logger(), "LaserScan data not available");
       return; // scan not available yet
-
+    }
     auto scan = latest_scan_;
     double angle_min = scan->angle_min;
     double angle_increment = scan->angle_increment;
@@ -51,63 +54,78 @@ private:
     float front_distance = scan->ranges[front_index];
     geometry_msgs::msg::Twist cmd;
 
-    if (front_distance > 0.35) {
+    if (!this->turning_locked_) {
 
-      cmd.linear.x = 0.1;
-      cmd.angular.z = 0;
+      if (front_distance > 0.35) {
 
-      RCLCPP_INFO(this->get_logger(), "Moving Forward");
-    } else {
+        cmd.linear.x = 0.1;
+        cmd.angular.z = 0;
 
-      // get data indices to filter
-      double left_angle = M_PI / 2;
-      double right_angle = -M_PI / 2;
+        RCLCPP_INFO(this->get_logger(), "Moving Forward");
+      } else {
+        this->turning_locked_ = true;
+        // get data indices to filter
+        double left_angle = M_PI / 2;
+        double right_angle = -M_PI / 2;
 
-      int start_index = std::max(
-          0, static_cast<int>((right_angle - angle_min) / angle_increment));
-      int end_index =
-          std::min(static_cast<int>((left_angle - angle_min) / angle_increment),
-                   static_cast<int>(scan->ranges.size() - 1));
+        int start_index = std::max(
+            0, static_cast<int>((right_angle - angle_min) / angle_increment));
+        int end_index = std::min(
+            static_cast<int>((left_angle - angle_min) / angle_increment),
+            static_cast<int>(scan->ranges.size() - 1));
 
-      double max_distance = 0;
-      int max_distance_index = -1;
+        double max_distance = 0;
+        int max_distance_index = -1;
 
-      for (int i = start_index; i <= end_index; i++) { // filter data
-        double range_data = scan->ranges[i];
+        for (int i = start_index; i <= end_index; i++) { // filter data
+          double range_data = scan->ranges[i];
 
-        if (std::isfinite(range_data)) { // if data is finite
-          if (range_data > max_distance) {
-            max_distance = range_data;
-            max_distance_index = i;
+          if (std::isfinite(range_data)) { // if data is finite
+            if (range_data > max_distance) {
+              max_distance = range_data;
+              max_distance_index = i;
+            }
           }
         }
+
+        if (max_distance_index >= 0) { // condition true if valid data was
+                                       // processed in range -90deg to +90 deg
+
+          this->direction_ = angle_min + angle_increment * max_distance_index;
+          RCLCPP_INFO(
+              this->get_logger(),
+              "Obstacle detected! Turn to safe distance %0.2f m at angle "
+              "%0.3f rad",
+              max_distance, this->direction_);
+          cmd.linear.x = 0.0;
+          cmd.angular.z = this->direction_ / 2;
+        }
+
+        else {
+          // no safe distance within processed data, so stop;
+          RCLCPP_INFO(this->get_logger(),
+                      "Obstacle detected! Stop, no safe angle turn available ");
+          cmd.linear.x = 0.0;
+          cmd.angular.z = 0.0;
+        }
       }
+    }
 
-      if (max_distance_index >= 0) { // condition true if valid data was
-                                     // processed in range -90deg to +90 deg
-
-        this->direction_ = angle_min + angle_increment * max_distance_index;
-        RCLCPP_INFO(this->get_logger(),
-                    "Obstacle detected! Turn to safe distance %0.2f m at angle "
-                    "%0.3f rad",
-                    max_distance, this->direction_);
+    if (this->turning_locked_) {
+      if (front_distance > 0.35) {
+        // Front is clear -> stop turning
+        this->turning_locked_ = false;
+        cmd.linear.x = 0.1;
+        cmd.angular.z = 0.0;
+      } else {
+        // Keep turning in the previously computed direction
         cmd.linear.x = 0.0;
         cmd.angular.z = this->direction_ / 2;
-      }
-
-      else {
-        // no safe distance within processed data, so stop;
-        RCLCPP_INFO(this->get_logger(),
-                    "Obstacle detected! Stop, no safe angle turn available ");
-        cmd.linear.x = 0.0;
-        cmd.angular.z = 0.0;
       }
     }
 
     cmd_vel_publisher_->publish(cmd);
   }
-
-  // void filter_data(float angle_start, float angle_end, );
 };
 
 int main(int argc, char *argv[]) {
