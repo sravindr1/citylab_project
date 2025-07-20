@@ -128,16 +128,20 @@ private:
       }
     } else { // this->turning_locked_ is true
 
-      if (front_distance >= this->max_distance_ - 0.02) {
+      if (front_distance >=
+          this->max_distance_ -
+              0.1) { // frontdistance >
+                     // max_distance -0.01, time to stop turning
 
-        RCLCPP_INFO(this->get_logger(), "Here");
+        // RCLCPP_INFO(this->get_logger(), "Here");
         // has turned enough , move linear
         this->turning_locked_ = false;
-        cmd.linear.x = 0.1;
+        // Stop and then move in next iteration
+        cmd.linear.x = 0.0;
         cmd.angular.z = 0.0;
       } else {
 
-        RCLCPP_INFO(this->get_logger(), "Turning");
+        // RCLCPP_INFO(this->get_logger(), "Turning");
         cmd.linear.x = 0.0;
         cmd.angular.z = this->direction_ / 2;
       }
